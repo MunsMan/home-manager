@@ -9,6 +9,7 @@ let
     attrValues
     concatStringsSep
     filter
+    flatten
     length
     literalExpression
     mapAttrsToList
@@ -122,6 +123,12 @@ let
     let
       id = getId account address;
       addressIsString = builtins.isString address;
+      # Use SMTP-specific username if set, otherwise fall back to address username
+      smtpUser =
+        if (!addressIsString && address.smtp.userName != null) then
+          address.smtp.userName
+        else
+          address.userName;
     in
     optionalAttrs (!addressIsString && address.smtp != null) {
       "mail.smtpserver.smtp_${id}.authMethod" = 3;
@@ -134,7 +141,7 @@ let
           2
         else
           3;
-      "mail.smtpserver.smtp_${id}.username" = address.userName;
+      "mail.smtpserver.smtp_${id}.username" = smtpUser;
     };
 
   toThunderbirdAccount =
@@ -152,36 +159,48 @@ let
     // optionalAttrs account.primary {
       "mail.accountmanager.defaultaccount" = "account_${id}";
     }
-    // optionalAttrs (account.imap != null) {
-      "mail.server.server_${id}.directory" = "${thunderbirdProfilesPath}/${profile.name}/ImapMail/${id}";
-      "mail.server.server_${id}.directory-rel" = "[ProfD]ImapMail/${id}";
-      "mail.server.server_${id}.hostname" = account.imap.host;
-      "mail.server.server_${id}.login_at_startup" = true;
-      "mail.server.server_${id}.name" = account.name;
-      "mail.server.server_${id}.port" = if (account.imap.port != null) then account.imap.port else 143;
-      "mail.server.server_${id}.socketType" =
-        if !account.imap.tls.enable then
-          0
-        else if account.imap.tls.useStartTls then
-          2
-        else
-          3;
-      "mail.server.server_${id}.type" = "imap";
-      "mail.server.server_${id}.userName" = account.userName;
-    }
-    // optionalAttrs (account.smtp != null) {
-      "mail.smtpserver.smtp_${id}.authMethod" = 3;
-      "mail.smtpserver.smtp_${id}.hostname" = account.smtp.host;
-      "mail.smtpserver.smtp_${id}.port" = if (account.smtp.port != null) then account.smtp.port else 587;
-      "mail.smtpserver.smtp_${id}.try_ssl" =
-        if !account.smtp.tls.enable then
-          0
-        else if account.smtp.tls.useStartTls then
-          2
-        else
-          3;
-      "mail.smtpserver.smtp_${id}.username" = account.userName;
-    }
+    // optionalAttrs (account.imap != null) (
+      let
+        # Use IMAP-specific username if set, otherwise fall back to account username
+        imapUser = if account.imap.userName != null then account.imap.userName else account.userName;
+      in
+      {
+        "mail.server.server_${id}.directory" = "${thunderbirdProfilesPath}/${profile.name}/ImapMail/${id}";
+        "mail.server.server_${id}.directory-rel" = "[ProfD]ImapMail/${id}";
+        "mail.server.server_${id}.hostname" = account.imap.host;
+        "mail.server.server_${id}.login_at_startup" = true;
+        "mail.server.server_${id}.name" = account.name;
+        "mail.server.server_${id}.port" = if (account.imap.port != null) then account.imap.port else 143;
+        "mail.server.server_${id}.socketType" =
+          if !account.imap.tls.enable then
+            0
+          else if account.imap.tls.useStartTls then
+            2
+          else
+            3;
+        "mail.server.server_${id}.type" = "imap";
+        "mail.server.server_${id}.userName" = imapUser;
+      }
+    )
+    // optionalAttrs (account.smtp != null) (
+      let
+        # Use SMTP-specific username if set, otherwise fall back to account username
+        smtpUser = if account.smtp.userName != null then account.smtp.userName else account.userName;
+      in
+      {
+        "mail.smtpserver.smtp_${id}.authMethod" = 3;
+        "mail.smtpserver.smtp_${id}.hostname" = account.smtp.host;
+        "mail.smtpserver.smtp_${id}.port" = if (account.smtp.port != null) then account.smtp.port else 587;
+        "mail.smtpserver.smtp_${id}.try_ssl" =
+          if !account.smtp.tls.enable then
+            0
+          else if account.smtp.tls.useStartTls then
+            2
+          else
+            3;
+        "mail.smtpserver.smtp_${id}.username" = smtpUser;
+      }
+    )
     // builtins.foldl' (a: b: a // b) { } (
       builtins.map (address: toThunderbirdSMTP account address) addresses
     )
@@ -918,7 +937,14 @@ in
               calendarAccounts = getAccountsForProfile name enabledCalendarAccountsWithId;
               contactAccounts = getAccountsForProfile name enabledContactAccountsWithId;
 
-              smtp = filter (a: a.smtp != null) emailAccounts;
+              accountsSmtp = filter (a: a.smtp != null) emailAccounts;
+              aliasesSmtp =
+                let
+                  getAliasesWithSmtp = a: filter (al: builtins.isAttrs al && al.smtp != null) a.aliases;
+                  getAliasesWithId = a: map (al: al // { id = getId a al; }) (getAliasesWithSmtp a);
+                in
+                flatten (map getAliasesWithId emailAccounts);
+              smtp = accountsSmtp ++ aliasesSmtp;
 
               feedAccounts = addId (attrValues profile.feedAccounts);
 
